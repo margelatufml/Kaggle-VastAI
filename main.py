@@ -80,7 +80,8 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
         logging_dir=f"/tmp/logs_fold{fold + 1}",
         eval_strategy="no",  # No eval during training
         save_strategy="no",  # <--- DO NOT SAVE CHECKPOINTS DURING TRAINING
-        load_best_model_at_end=False,  # <--- Don't try to reload best checkpoint
+        load_best_model_at_end=False,
+        metric_for_best_model="eval_loss",  # <---- THIS IS REQUIRED!        # <--- Don't try to reload best checkpoint
         fp16=True,
         seed=42 + fold,
         report_to="none"
