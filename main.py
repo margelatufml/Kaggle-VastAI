@@ -1,6 +1,6 @@
 import os
 
-# Always set HuggingFace cache at the VERY TOP, before any HF import!
+# Set HuggingFace cache AT THE TOP (before any transformers import)
 os.environ['HF_HOME'] = '/workspace/huggingface_cache'
 os.environ['TRANSFORMERS_CACHE'] = '/workspace/huggingface_cache'
 os.environ['HF_DATASETS_CACHE'] = '/workspace/huggingface_cache'
@@ -24,7 +24,7 @@ label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
 MODEL_NAME = "roberta-large"
-MAX_LEN = 384  # fits in 24G+ VRAM, else try 256
+MAX_LEN = 384
 NUM_FOLDS = 5
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -33,7 +33,7 @@ def preprocess(tokenizer, df):
     return tokenizer(
         df["text"].tolist(),
         truncation=True,
-        padding=False,       # dynamic padding (handled by collator)
+        padding=False,   # dynamic padding (handled by collator)
         max_length=MAX_LEN,
         return_tensors=None
     )
@@ -84,22 +84,22 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
 
     training_args = TrainingArguments(
         output_dir=fold_output_dir,
-        num_train_epochs=8,              # Increase for more thorough fit (EarlyStopping will prevent overfit)
+        num_train_epochs=8,
         per_device_train_batch_size=8,
         per_device_eval_batch_size=8,
-        gradient_accumulation_steps=4,   # If you want bigger "effective batch"
-        learning_rate=1.5e-5,            # Slightly lower for less overfit
-        weight_decay=0.05,               # Slightly higher for reg.
+        gradient_accumulation_steps=4,
+        learning_rate=1.5e-5,
+        weight_decay=0.05,
         logging_dir=fold_logging_dir,
         eval_strategy="epoch",
-        save_strategy="epoch",
-        save_total_limit=1,              # Only keep latest/best model
-        load_best_model_at_end=True,
+        save_strategy="no",               # <<< NO checkpointing (disk safe!)
+        save_total_limit=1,
+        load_best_model_at_end=False,     # <<< don't try to reload best checkpoint
         metric_for_best_model="eval_loss",
-        label_smoothing_factor=0.1,      # Smoother probabilities
-        warmup_ratio=0.15,               # Warmup LR
+        label_smoothing_factor=0.1,
+        warmup_ratio=0.15,
         fp16=torch.cuda.is_available(),
-        seed=42 + fold,                  # Different for each fold
+        seed=42 + fold,
         report_to="none"
     )
 
@@ -130,10 +130,10 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     test_probs = torch.nn.functional.softmax(torch.tensor(test_logits), dim=-1).numpy()
     test_logits_all[fold] = test_probs
 
-    # Save disk space
+    # Save disk space - always clean up
     import shutil
-    shutil.rmtree(fold_output_dir)
-    shutil.rmtree(fold_logging_dir)
+    shutil.rmtree(fold_output_dir, ignore_errors=True)
+    shutil.rmtree(fold_logging_dir, ignore_errors=True)
     torch.cuda.empty_cache()
 
 # Average test predictions over folds
