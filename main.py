@@ -74,17 +74,18 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     training_args = TrainingArguments(
         output_dir=f"./results_fold{fold + 1}",
         num_train_epochs=5,
-        per_device_train_batch_size=16,  # 48GB VRAM: try even 32 or 64!
+        per_device_train_batch_size=16,
         per_device_eval_batch_size=16,
-        gradient_accumulation_steps=2,   # for very large batch effect
+        gradient_accumulation_steps=2,
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=f"./logs_fold{fold + 1}",
-        eval_strategy="epoch",
+        evaluation_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
+        save_total_limit=1,
         metric_for_best_model="eval_loss",
-        fp16=True,  # Use mixed precision for speed
+        fp16=True,
         seed=42 + fold,
         report_to="none"
     )
