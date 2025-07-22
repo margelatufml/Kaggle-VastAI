@@ -78,10 +78,11 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=f"/tmp/logs_fold{fold + 1}",
-        eval_strategy="no",  # No eval during training
-        save_strategy="no",  # <--- DO NOT SAVE CHECKPOINTS DURING TRAINING
-        load_best_model_at_end=False,
-        metric_for_best_model="eval_loss",  # <---- THIS IS REQUIRED!        # <--- Don't try to reload best checkpoint
+        eval_strategy="epoch",  # <---- THIS IS CRITICAL
+        save_strategy="epoch",  # <---- THIS IS NEEDED FOR RESTORING BEST MODEL
+        save_total_limit=1,  # <---- only keep 1 checkpoint to save space
+        load_best_model_at_end=True,  # <---- THIS IS REQUIRED
+        metric_for_best_model="eval_loss",  # <---- AND THIS
         fp16=True,
         seed=42 + fold,
         report_to="none"
