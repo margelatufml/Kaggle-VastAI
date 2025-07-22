@@ -1,8 +1,10 @@
 import os
 import pandas as pd
 import numpy as np
-from transformers import (AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments,
-                          DataCollatorWithPadding, EarlyStoppingCallback)
+from transformers import (
+    AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments,
+    DataCollatorWithPadding, EarlyStoppingCallback
+)
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
 import torch
@@ -14,8 +16,10 @@ author2label = {a: i for i, a in enumerate(sorted(train['author'].unique()))}
 label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
-MODEL_NAME = "bert-large-uncased"  # Try "xlnet-large-cased" for another strong model!
-MAX_LEN = 384  # Try 256/512/384 as needed
+MODEL_NAME = "bert-large-uncased"  # Or "xlnet-large-cased", etc.
+MAX_LEN = 384  # RTX 8000 can go up to 512 if needed
+NUM_FOLDS = 5
+
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def preprocess(tokenizer, df):
@@ -47,8 +51,6 @@ def compute_metrics(eval_pred):
 # 2. Data Collator (fast dynamic padding)
 data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
 
-# 3. KFold
-NUM_FOLDS = 5
 skf = StratifiedKFold(n_splits=NUM_FOLDS, shuffle=True, random_state=42)
 oof_preds = np.zeros((len(train), 3))
 test_preds = np.zeros((len(test), 3))
@@ -64,25 +66,31 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     train_dataset = SpookyDataset(train_encodings, train_fold['label'].values)
     val_dataset = SpookyDataset(val_encodings, val_fold['label'].values)
 
+    # Always use /workspace, never /tmp or /
+    fold_output_dir = f"/workspace/results_fold{fold + 1}"
+    fold_logging_dir = f"/workspace/logs_fold{fold + 1}"
+    os.makedirs(fold_output_dir, exist_ok=True)
+    os.makedirs(fold_logging_dir, exist_ok=True)
+
     model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
         num_labels=3
     )
 
     training_args = TrainingArguments(
-        output_dir=f"/tmp/results_fold{fold + 1}",
+        output_dir=fold_output_dir,
         num_train_epochs=5,
         per_device_train_batch_size=16,
         per_device_eval_batch_size=16,
         gradient_accumulation_steps=2,
         learning_rate=2e-5,
         weight_decay=0.01,
-        logging_dir=f"/tmp/logs_fold{fold + 1}",
-        eval_strategy="epoch",  # <---- THIS IS CRITICAL
-        save_strategy="epoch",  # <---- THIS IS NEEDED FOR RESTORING BEST MODEL
-        save_total_limit=1,  # <---- only keep 1 checkpoint to save space
-        load_best_model_at_end=True,  # <---- THIS IS REQUIRED
-        metric_for_best_model="eval_loss",  # <---- AND THIS
+        logging_dir=fold_logging_dir,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=1,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
         fp16=True,
         seed=42 + fold,
         report_to="none"
@@ -100,10 +108,12 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
 
     trainer.train()
 
+    # OOF predictions
     val_logits = trainer.predict(val_dataset).predictions
     val_probs = torch.nn.functional.softmax(torch.tensor(val_logits), dim=-1).numpy()
     oof_preds[val_idx] = val_probs
 
+    # Test predictions (always use same order/test encoding!)
     if fold == 0:
         test_encodings = preprocess(tokenizer, test)
         test_dataset = SpookyDataset(test_encodings)
@@ -111,6 +121,12 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     test_logits = trainer.predict(test_dataset).predictions
     test_probs = torch.nn.functional.softmax(torch.tensor(test_logits), dim=-1).numpy()
     test_logits_all[fold] = test_probs
+
+    # Optional: Clean up after this fold if disk is tight (uncomment below)
+    # import shutil
+    # shutil.rmtree(fold_output_dir)
+    # shutil.rmtree(fold_logging_dir)
+    torch.cuda.empty_cache()
 
 # Average test predictions over folds
 test_preds = np.mean(test_logits_all, axis=0)
@@ -130,3 +146,4 @@ oof_df = pd.DataFrame(oof_preds, columns=[label2author[i] for i in range(3)])
 oof_df["id"] = train["id"]
 oof_df["true_label"] = train["author"]
 oof_df.to_csv("oof_predictions.csv", index=False)
+print("oof_predictions.csv written.")
