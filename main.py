@@ -93,8 +93,10 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
         weight_decay=0.01,
         logging_dir=f"./logs_fold{fold + 1}",
         eval_strategy="epoch",
-        save_strategy="no",
-        load_best_model_at_end=False,
+        save_strategy="epoch",
+        save_total_limit=1,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
         fp16=True,
         seed=42 + fold,
         report_to="none"
