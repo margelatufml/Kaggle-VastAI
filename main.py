@@ -78,7 +78,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=f"/tmp/logs_fold{fold + 1}",      # Outputs to /tmp
-        evaluation_strategy="epoch",                  # <-- this is the correct argument
+        eval_strategy="epoch",                  # <-- this is the correct argument
         save_strategy="epoch",
         load_best_model_at_end=True,
         save_total_limit=1,                           # Only keep the best checkpoint per fold
