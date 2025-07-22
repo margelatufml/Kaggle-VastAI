@@ -120,14 +120,15 @@ def transformer_fold_predict(model_name, train_df, val_df, test_df, fold, num_la
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=f"./logs_{model_name.replace('/', '-')}_fold{fold + 1}",
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
+        # evaluation_strategy="epoch",   # REMOVE this line
+        # save_strategy="epoch",         # REMOVE this line
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         fp16=torch.cuda.is_available(),
         seed=SEED + fold,
         report_to="none"
     )
+
     def compute_metrics(eval_pred):
         logits, labels = eval_pred
         probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
