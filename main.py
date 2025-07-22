@@ -8,6 +8,10 @@ from transformers import (
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
 import torch
+import os
+os.environ["HF_HOME"] = "/workspace/huggingface"
+os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
+os.environ["HF_DATASETS_CACHE"] = "/workspace/huggingface"
 
 # 1. Data
 train = pd.read_csv('train.csv')
