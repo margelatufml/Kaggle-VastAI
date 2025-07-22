@@ -14,8 +14,8 @@ author2label = {a: i for i, a in enumerate(sorted(train['author'].unique()))}
 label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
-MODEL_NAME = "bert-large-uncased"  # try "xlnet-large-cased" if you want!
-MAX_LEN = 384  # adjust as you wish, higher possible on 48GB VRAM
+MODEL_NAME = "bert-large-uncased"  # Try "xlnet-large-cased" for another strong model!
+MAX_LEN = 384  # Try 256/512/384 as needed
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def preprocess(tokenizer, df):
@@ -60,11 +60,9 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
 
     train_encodings = preprocess(tokenizer, train_fold)
     val_encodings = preprocess(tokenizer, val_fold)
-    # Only tokenize test ONCE, outside loop for even more speed (not per fold!)
 
     train_dataset = SpookyDataset(train_encodings, train_fold['label'].values)
     val_dataset = SpookyDataset(val_encodings, val_fold['label'].values)
-    # test_dataset defined after fold
 
     model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
@@ -72,18 +70,18 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     )
 
     training_args = TrainingArguments(
-        output_dir=f"./results_fold{fold + 1}",
+        output_dir=f"/tmp/results_fold{fold + 1}",    # Outputs to /tmp
         num_train_epochs=5,
         per_device_train_batch_size=16,
         per_device_eval_batch_size=16,
         gradient_accumulation_steps=2,
         learning_rate=2e-5,
         weight_decay=0.01,
-        logging_dir=f"./logs_fold{fold + 1}",
-        evaluation_strategy="epoch",
+        logging_dir=f"/tmp/logs_fold{fold + 1}",      # Outputs to /tmp
+        evaluation_strategy="epoch",                  # <-- this is the correct argument
         save_strategy="epoch",
         load_best_model_at_end=True,
-        save_total_limit=1,
+        save_total_limit=1,                           # Only keep the best checkpoint per fold
         metric_for_best_model="eval_loss",
         fp16=True,
         seed=42 + fold,
@@ -106,7 +104,6 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     val_probs = torch.nn.functional.softmax(torch.tensor(val_logits), dim=-1).numpy()
     oof_preds[val_idx] = val_probs
 
-    # test only tokenize ONCE, not per fold!
     if fold == 0:
         test_encodings = preprocess(tokenizer, test)
         test_dataset = SpookyDataset(test_encodings)
