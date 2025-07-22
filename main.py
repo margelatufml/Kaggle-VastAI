@@ -4,7 +4,10 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import torch
-from transformers import (AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments, DataCollatorWithPadding, EarlyStoppingCallback)
+from transformers import (
+    AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments,
+    DataCollatorWithPadding, EarlyStoppingCallback
+)
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -43,7 +46,7 @@ def make_handcrafted_features(df):
         'num_words': df['text'].str.split().apply(len),
         'num_capitals': df['text'].apply(lambda x: sum(1 for c in x if c.isupper())),
         'num_exclaims': df['text'].str.count('!'),
-        'num_questions': df['text'].str.count('\?'),
+        'num_questions': df['text'].str.count(r'\?'),
         'num_punct': df['text'].str.count(r'[,.!?:;]'),
         # Add more features as desired!
     })
@@ -120,8 +123,8 @@ def transformer_fold_predict(model_name, train_df, val_df, test_df, fold, num_la
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=f"./logs_{model_name.replace('/', '-')}_fold{fold + 1}",
-        # evaluation_strategy="epoch",   # REMOVE this line
-        # save_strategy="epoch",         # REMOVE this line
+        evaluation_strategy="epoch",      # FIX: use both set to 'epoch'
+        save_strategy="epoch",            # FIX: use both set to 'epoch'
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         fp16=torch.cuda.is_available(),
@@ -189,17 +192,13 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
 
 # -------------------- ENSEMBLING: Probability Averaging -------------------- #
 print("\nAveraging ensemble probabilities...")
-# You can assign custom weights to each model here, e.g.:
-# weights = {"roberta": 0.35, "deberta": 0.30, "electra": 0.20, "lgbm": 0.15}
 weights = {alias: 1 for alias in MODEL_ALIASES}
 weights['lgbm'] = 1
 
-# OOF
 oof_final = sum(w * oof_preds[alias] for alias, w in weights.items()) / sum(weights.values())
 oof_logloss = log_loss(train['label'].values, oof_final)
 print(f"==== OOF LOGLOSS (Ensemble): {oof_logloss:.5f} ====")
 
-# Test
 test_final = sum(w * np.mean(test_preds[alias], axis=0) for alias, w in weights.items()) / sum(weights.values())
 eps = 1e-15
 test_final = test_final / test_final.sum(axis=1, keepdims=True)
