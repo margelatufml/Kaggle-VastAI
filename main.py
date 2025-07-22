@@ -16,8 +16,8 @@ author2label = {a: i for i, a in enumerate(sorted(train['author'].unique()))}
 label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
-MODEL_NAME = "bert-large-uncased"  # Or "xlnet-large-cased", etc.
-MAX_LEN = 384  # RTX 8000 can go up to 512 if needed
+MODEL_NAME = "bert-base-uncased"  # MUCH smaller than bert-large!
+MAX_LEN = 256  # Even less, to lower memory use
 NUM_FOLDS = 5
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -26,9 +26,9 @@ def preprocess(tokenizer, df):
     return tokenizer(
         df["text"].tolist(),
         truncation=True,
-        padding=False,       # for dynamic padding
+        padding=False,
         max_length=MAX_LEN,
-        return_tensors=None  # tensors in collator
+        return_tensors=None
     )
 
 class SpookyDataset(torch.utils.data.Dataset):
@@ -48,7 +48,6 @@ def compute_metrics(eval_pred):
     probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
     return {"log_loss": log_loss(labels, probs)}
 
-# 2. Data Collator (fast dynamic padding)
 data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
 
 skf = StratifiedKFold(n_splits=NUM_FOLDS, shuffle=True, random_state=42)
@@ -66,7 +65,6 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     train_dataset = SpookyDataset(train_encodings, train_fold['label'].values)
     val_dataset = SpookyDataset(val_encodings, val_fold['label'].values)
 
-    # Always use /workspace, never /tmp or /
     fold_output_dir = f"/workspace/results_fold{fold + 1}"
     fold_logging_dir = f"/workspace/logs_fold{fold + 1}"
     os.makedirs(fold_output_dir, exist_ok=True)
@@ -79,16 +77,16 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
 
     training_args = TrainingArguments(
         output_dir=fold_output_dir,
-        num_train_epochs=5,
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=16,
-        gradient_accumulation_steps=2,
+        num_train_epochs=3,  # Small model, less risk of overfitting
+        per_device_train_batch_size=32,  # Try 32! If OOM, reduce to 16.
+        per_device_eval_batch_size=32,
+        gradient_accumulation_steps=1,
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=fold_logging_dir,
         eval_strategy="epoch",
         save_strategy="epoch",
-        save_total_limit=1,
+        save_total_limit=1,  # only keep 1 checkpoint
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         fp16=True,
@@ -113,7 +111,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     val_probs = torch.nn.functional.softmax(torch.tensor(val_logits), dim=-1).numpy()
     oof_preds[val_idx] = val_probs
 
-    # Test predictions (always use same order/test encoding!)
+    # Test predictions
     if fold == 0:
         test_encodings = preprocess(tokenizer, test)
         test_dataset = SpookyDataset(test_encodings)
@@ -122,10 +120,10 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     test_probs = torch.nn.functional.softmax(torch.tensor(test_logits), dim=-1).numpy()
     test_logits_all[fold] = test_probs
 
-    # Optional: Clean up after this fold if disk is tight (uncomment below)
-    # import shutil
-    # shutil.rmtree(fold_output_dir)
-    # shutil.rmtree(fold_logging_dir)
+    # Optional: Remove checkpoints/logs after fold to keep disk clean
+    import shutil
+    shutil.rmtree(fold_output_dir)
+    shutil.rmtree(fold_logging_dir)
     torch.cuda.empty_cache()
 
 # Average test predictions over folds
