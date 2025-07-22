@@ -123,7 +123,7 @@ def transformer_fold_predict(model_name, train_df, val_df, test_df, fold, num_la
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=f"./logs_{model_name.replace('/', '-')}_fold{fold + 1}",
-        evaluation_strategy="epoch",      # FIX: use both set to 'epoch'
+        eval_strategy="epoch",      # FIX: use both set to 'epoch'
         save_strategy="epoch",            # FIX: use both set to 'epoch'
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
