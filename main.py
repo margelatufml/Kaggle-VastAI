@@ -1,52 +1,134 @@
+import os
 import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
+from transformers import (AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments,
+                          DataCollatorWithPadding, EarlyStoppingCallback)
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
+import torch
 
-# -------------------- DATA LOAD -------------------- #
+# 1. Data
 train = pd.read_csv('train.csv')
 test = pd.read_csv('test.csv')
 author2label = {a: i for i, a in enumerate(sorted(train['author'].unique()))}
 label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
-# -------------------- TF-IDF FEATURES -------------------- #
-tfidf = TfidfVectorizer(ngram_range=(1, 2), min_df=3, max_features=10000)
-tfidf_train = tfidf.fit_transform(train['text'])
-tfidf_test = tfidf.transform(test['text'])
+MODEL_NAME = "bert-large-uncased"  # try "xlnet-large-cased" if you want!
+MAX_LEN = 384  # adjust as you wish, higher possible on 48GB VRAM
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-# -------------------- KFOLD LOGREG -------------------- #
+def preprocess(tokenizer, df):
+    return tokenizer(
+        df["text"].tolist(),
+        truncation=True,
+        padding=False,       # for dynamic padding
+        max_length=MAX_LEN,
+        return_tensors=None  # tensors in collator
+    )
+
+class SpookyDataset(torch.utils.data.Dataset):
+    def __init__(self, encodings, labels=None):
+        self.encodings = encodings
+        self.labels = labels
+    def __getitem__(self, idx):
+        item = {k: torch.tensor(v[idx]) for k, v in self.encodings.items()}
+        if self.labels is not None:
+            item["labels"] = torch.tensor(self.labels[idx])
+        return item
+    def __len__(self):
+        return len(self.encodings["input_ids"])
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
+    return {"log_loss": log_loss(labels, probs)}
+
+# 2. Data Collator (fast dynamic padding)
+data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
+
+# 3. KFold
 NUM_FOLDS = 5
-SEED = 42
-skf = StratifiedKFold(n_splits=NUM_FOLDS, shuffle=True, random_state=SEED)
-
+skf = StratifiedKFold(n_splits=NUM_FOLDS, shuffle=True, random_state=42)
 oof_preds = np.zeros((len(train), 3))
 test_preds = np.zeros((len(test), 3))
 
 for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
-    print(f"\n==== Fold {fold + 1}/{NUM_FOLDS} ====")
-    X_train, X_val = tfidf_train[train_idx], tfidf_train[val_idx]
-    y_train, y_val = train['label'].values[train_idx], train['label'].values[val_idx]
+    print(f"\n==== Fold {fold+1}/{NUM_FOLDS} ====")
+    train_fold = train.iloc[train_idx].reset_index(drop=True)
+    val_fold = train.iloc[val_idx].reset_index(drop=True)
 
-    clf = LogisticRegression(C=2.0, max_iter=200, multi_class='multinomial', solver='lbfgs', random_state=SEED + fold)
-    clf.fit(X_train, y_train)
+    train_encodings = preprocess(tokenizer, train_fold)
+    val_encodings = preprocess(tokenizer, val_fold)
+    # Only tokenize test ONCE, outside loop for even more speed (not per fold!)
 
-    oof_preds[val_idx] = clf.predict_proba(X_val)
-    test_preds += clf.predict_proba(tfidf_test) / NUM_FOLDS
+    train_dataset = SpookyDataset(train_encodings, train_fold['label'].values)
+    val_dataset = SpookyDataset(val_encodings, val_fold['label'].values)
+    # test_dataset defined after fold
 
+    model = AutoModelForSequenceClassification.from_pretrained(
+        MODEL_NAME,
+        num_labels=3
+    )
+
+    training_args = TrainingArguments(
+        output_dir=f"./results_fold{fold + 1}",
+        num_train_epochs=5,
+        per_device_train_batch_size=16,  # 48GB VRAM: try even 32 or 64!
+        per_device_eval_batch_size=16,
+        gradient_accumulation_steps=2,   # for very large batch effect
+        learning_rate=2e-5,
+        weight_decay=0.01,
+        logging_dir=f"./logs_fold{fold + 1}",
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        fp16=True,  # Use mixed precision for speed
+        seed=42 + fold,
+        report_to="none"
+    )
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=val_dataset,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2, early_stopping_threshold=0.0)],
+    )
+
+    trainer.train()
+
+    val_logits = trainer.predict(val_dataset).predictions
+    val_probs = torch.nn.functional.softmax(torch.tensor(val_logits), dim=-1).numpy()
+    oof_preds[val_idx] = val_probs
+
+    # test only tokenize ONCE, not per fold!
+    if fold == 0:
+        test_encodings = preprocess(tokenizer, test)
+        test_dataset = SpookyDataset(test_encodings)
+        test_logits_all = np.zeros((NUM_FOLDS, len(test), 3))
+    test_logits = trainer.predict(test_dataset).predictions
+    test_probs = torch.nn.functional.softmax(torch.tensor(test_logits), dim=-1).numpy()
+    test_logits_all[fold] = test_probs
+
+# Average test predictions over folds
+test_preds = np.mean(test_logits_all, axis=0)
+eps = 1e-15
+test_preds = test_preds / test_preds.sum(axis=1, keepdims=True)
+test_preds = np.clip(test_preds, eps, 1 - eps)
 oof_logloss = log_loss(train['label'].values, oof_preds)
-print(f"\n==== OOF LOGLOSS (LogReg+TFIDF): {oof_logloss:.5f} ====")
+print(f"\n==== OOF LOGLOSS (CV estimate): {oof_logloss:.5f} ====")
 
-# -------------------- SUBMISSION -------------------- #
+# Submission
 sub = pd.DataFrame(test_preds, columns=[label2author[i] for i in range(3)])
 sub.insert(0, "id", test['id'])
-sub.to_csv("submission_logreg_tfidf.csv", index=False, float_format="%.12f")
-print("submission_logreg_tfidf.csv written.")
+sub.to_csv("submission.csv", index=False, float_format="%.12f")
+print("submission.csv written.")
 
 oof_df = pd.DataFrame(oof_preds, columns=[label2author[i] for i in range(3)])
 oof_df["id"] = train["id"]
 oof_df["true_label"] = train["author"]
-oof_df.to_csv("oof_predictions_logreg.csv", index=False)
-print("oof_predictions_logreg.csv written.")
+oof_df.to_csv("oof_predictions.csv", index=False)
