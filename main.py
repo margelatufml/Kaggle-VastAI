@@ -1,4 +1,11 @@
 import os
+
+# Always set HuggingFace cache at the VERY TOP, before any HF import!
+os.environ['HF_HOME'] = '/workspace/huggingface_cache'
+os.environ['TRANSFORMERS_CACHE'] = '/workspace/huggingface_cache'
+os.environ['HF_DATASETS_CACHE'] = '/workspace/huggingface_cache'
+os.makedirs('/workspace/huggingface_cache', exist_ok=True)
+
 import pandas as pd
 import numpy as np
 from transformers import (
@@ -65,8 +72,8 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     train_dataset = SpookyDataset(train_encodings, train_fold['label'].values)
     val_dataset = SpookyDataset(val_encodings, val_fold['label'].values)
 
-    fold_output_dir = f"./results_fold{fold + 1}"
-    fold_logging_dir = f"./logs_fold{fold + 1}"
+    fold_output_dir = f"/workspace/results_fold{fold + 1}"
+    fold_logging_dir = f"/workspace/logs_fold{fold + 1}"
     os.makedirs(fold_output_dir, exist_ok=True)
     os.makedirs(fold_logging_dir, exist_ok=True)
 
@@ -140,11 +147,11 @@ print(f"\n==== OOF LOGLOSS (CV estimate): {oof_logloss:.5f} ====")
 # Submission
 sub = pd.DataFrame(test_preds, columns=[label2author[i] for i in range(3)])
 sub.insert(0, "id", test['id'])
-sub.to_csv("submission.csv", index=False, float_format="%.12f")
+sub.to_csv("/workspace/submission.csv", index=False, float_format="%.12f")
 print("submission.csv written.")
 
 oof_df = pd.DataFrame(oof_preds, columns=[label2author[i] for i in range(3)])
 oof_df["id"] = train["id"]
 oof_df["true_label"] = train["author"]
-oof_df.to_csv("oof_predictions.csv", index=False)
+oof_df.to_csv("/workspace/oof_predictions.csv", index=False)
 print("oof_predictions.csv written.")
