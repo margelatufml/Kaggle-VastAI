@@ -8,10 +8,13 @@ from transformers import (
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
 import torch
-import os
-os.environ["HF_HOME"] = "/workspace/huggingface"
-os.environ["TRANSFORMERS_CACHE"] = "/workspace/huggingface"
-os.environ["HF_DATASETS_CACHE"] = "/workspace/huggingface"
+
+# ---- NEW: Set deterministic seeds globally ----
+SEED = 42
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
 
 # 1. Data
 train = pd.read_csv('train.csv')
@@ -20,19 +23,17 @@ author2label = {a: i for i, a in enumerate(sorted(train['author'].unique()))}
 label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
-MODEL_NAME = "bert-base-uncased"  # MUCH smaller than bert-large!
-MAX_LEN = 256  # Even less, to lower memory use
-NUM_FOLDS = 5
-
+MODEL_NAME = "roberta-large"
+MAX_LEN = 384
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def preprocess(tokenizer, df):
     return tokenizer(
         df["text"].tolist(),
         truncation=True,
-        padding=False,
+        padding=False,       # for dynamic padding
         max_length=MAX_LEN,
-        return_tensors=None
+        return_tensors=None  # tensors in collator
     )
 
 class SpookyDataset(torch.utils.data.Dataset):
@@ -54,12 +55,19 @@ def compute_metrics(eval_pred):
 
 data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
 
-skf = StratifiedKFold(n_splits=NUM_FOLDS, shuffle=True, random_state=42)
+NUM_FOLDS = 5
+skf = StratifiedKFold(n_splits=NUM_FOLDS, shuffle=True, random_state=SEED)
 oof_preds = np.zeros((len(train), 3))
 test_preds = np.zeros((len(test), 3))
 
 for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     print(f"\n==== Fold {fold+1}/{NUM_FOLDS} ====")
+    # ---- NEW: Set per-fold seeds (superstition, but helps stability) ----
+    np.random.seed(SEED + fold)
+    torch.manual_seed(SEED + fold)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED + fold)
+
     train_fold = train.iloc[train_idx].reset_index(drop=True)
     val_fold = train.iloc[val_idx].reset_index(drop=True)
 
@@ -69,32 +77,34 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     train_dataset = SpookyDataset(train_encodings, train_fold['label'].values)
     val_dataset = SpookyDataset(val_encodings, val_fold['label'].values)
 
-    fold_output_dir = f"/workspace/results_fold{fold + 1}"
-    fold_logging_dir = f"/workspace/logs_fold{fold + 1}"
-    os.makedirs(fold_output_dir, exist_ok=True)
-    os.makedirs(fold_logging_dir, exist_ok=True)
-
     model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
         num_labels=3
     )
+    # ---- NEW: Enable gradient checkpointing ----
+    model.gradient_checkpointing_enable()
 
     training_args = TrainingArguments(
-        output_dir=fold_output_dir,
-        num_train_epochs=3,  # Small model, less risk of overfitting
-        per_device_train_batch_size=32,  # Try 32! If OOM, reduce to 16.
-        per_device_eval_batch_size=32,
-        gradient_accumulation_steps=1,
+        output_dir=f"./results_fold{fold + 1}",
+        num_train_epochs=6,
+        per_device_train_batch_size=8,
+        per_device_eval_batch_size=8,
+        gradient_accumulation_steps=4,
         learning_rate=2e-5,
-        weight_decay=0.01,
-        logging_dir=fold_logging_dir,
-        eval_strategy="epoch",
+        # ---- TUNE weight decay ----
+        weight_decay=0.05,   # try 0.05 (or 0.1 if needed)
+        # ---- LABEL SMOOTHING ----
+        label_smoothing_factor=0.1,
+        # ---- LR SCHEDULER WARMUP ----
+        warmup_ratio=0.1,
+        logging_dir=f"./logs_fold{fold + 1}",
+        evaluation_strategy="epoch",
         save_strategy="epoch",
-        save_total_limit=1,  # only keep 1 checkpoint
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
-        fp16=True,
-        seed=42 + fold,
+        eval_accumulation_steps=2,   # ---- for OOM safety
+        fp16=torch.cuda.is_available(),
+        seed=SEED + fold,
         report_to="none"
     )
 
@@ -105,47 +115,4 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
         eval_dataset=val_dataset,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=2, early_stopping_threshold=0.0)],
-    )
-
-    trainer.train()
-
-    # OOF predictions
-    val_logits = trainer.predict(val_dataset).predictions
-    val_probs = torch.nn.functional.softmax(torch.tensor(val_logits), dim=-1).numpy()
-    oof_preds[val_idx] = val_probs
-
-    # Test predictions
-    if fold == 0:
-        test_encodings = preprocess(tokenizer, test)
-        test_dataset = SpookyDataset(test_encodings)
-        test_logits_all = np.zeros((NUM_FOLDS, len(test), 3))
-    test_logits = trainer.predict(test_dataset).predictions
-    test_probs = torch.nn.functional.softmax(torch.tensor(test_logits), dim=-1).numpy()
-    test_logits_all[fold] = test_probs
-
-    # Optional: Remove checkpoints/logs after fold to keep disk clean
-    import shutil
-    shutil.rmtree(fold_output_dir)
-    shutil.rmtree(fold_logging_dir)
-    torch.cuda.empty_cache()
-
-# Average test predictions over folds
-test_preds = np.mean(test_logits_all, axis=0)
-eps = 1e-15
-test_preds = test_preds / test_preds.sum(axis=1, keepdims=True)
-test_preds = np.clip(test_preds, eps, 1 - eps)
-oof_logloss = log_loss(train['label'].values, oof_preds)
-print(f"\n==== OOF LOGLOSS (CV estimate): {oof_logloss:.5f} ====")
-
-# Submission
-sub = pd.DataFrame(test_preds, columns=[label2author[i] for i in range(3)])
-sub.insert(0, "id", test['id'])
-sub.to_csv("submission.csv", index=False, float_format="%.12f")
-print("submission.csv written.")
-
-oof_df = pd.DataFrame(oof_preds, columns=[label2author[i] for i in range(3)])
-oof_df["id"] = train["id"]
-oof_df["true_label"] = train["author"]
-oof_df.to_csv("oof_predictions.csv", index=False)
-print("oof_predictions.csv written.")
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2,
