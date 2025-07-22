@@ -84,7 +84,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
         learning_rate=1.5e-5,            # Slightly lower for less overfit
         weight_decay=0.05,               # Slightly higher for reg.
         logging_dir=fold_logging_dir,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=1,              # Only keep latest/best model
         load_best_model_at_end=True,
