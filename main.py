@@ -81,8 +81,8 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
         weight_decay=0.01,
         logging_dir=f"./logs_fold{fold + 1}",
         eval_strategy="epoch",
-        save_strategy="epoch",
-        load_best_model_at_end=True,
+        save_strategy="no",  # <-- CHANGE THIS!
+        load_best_model_at_end=False,  # <-- Otherwise will fail if no model saved!
         metric_for_best_model="eval_loss",
         fp16=torch.cuda.is_available(),
         seed=42 + fold,
