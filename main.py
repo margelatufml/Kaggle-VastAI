@@ -86,7 +86,6 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
         metric_for_best_model="eval_loss",
         fp16=True,  # <-- Always use fp16 on A100 (supported & faster)
         dataloader_num_workers=8,  # <-- Use 8 (or even 16) for maximum dataloader throughput
-        pin_memory=True,  # <-- Optional but helps dataloader speed
         seed=42 + fold,
         report_to="none"
     )
