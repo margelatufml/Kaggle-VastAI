@@ -6,9 +6,15 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
 import torch
 
+# Sanity check: print out GPU info at start
+print("CUDA available?", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("Using GPU:", torch.cuda.get_device_name(0))
+    print("Num GPUs:", torch.cuda.device_count())
+
 MODEL_PATH = "./mlm_spooky"  # Where MLM pretraining saved
 FOLDS = 5
-BATCH_SIZE = 8
+BATCH_SIZE = 64   # <-- Try 32 or 64, you have 80GB VRAM! (set lower if OOM)
 MAX_LEN = 384
 
 # 1. Load labeled data (combine Kaggle + aux labeled)
@@ -38,16 +44,17 @@ for fold, (tr_idx, val_idx) in enumerate(skf.split(train, train["label"])):
 
     args = TrainingArguments(
         output_dir=f"./finetune_fold{fold+1}",
-        num_train_epochs=3,       # If you see overfitting, use 2 or add early stopping
+        num_train_epochs=3,       
         per_device_train_batch_size=BATCH_SIZE,
         per_device_eval_batch_size=BATCH_SIZE,
         learning_rate=2e-5,
-        eval_strategy="epoch",
+        evaluation_strategy="epoch",
         save_strategy="epoch",
         logging_dir=f"./logs_fold{fold+1}",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
-        fp16=torch.cuda.is_available(),
+        fp16=False,                  # << ALWAYS True for A100!
+        bf16=True,                # << UNCOMMENT if you want bf16 (optional, if model supports)
         seed=42+fold,
         report_to="none"
     )
