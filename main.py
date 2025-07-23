@@ -188,8 +188,6 @@ for fold, (train_idx, val_idx) in enumerate(fold_splits):
         MODEL_NAME,
         num_labels=len(author2label),
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        attn_implementation="flash_attention_2" if torch.cuda.is_available() else None,
-        use_flash_attention_2=True if torch.cuda.is_available() else False,
         # xformers backend used automatically if available
     )
     training_args = TrainingArguments(
@@ -205,8 +203,8 @@ for fold, (train_idx, val_idx) in enumerate(fold_splits):
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
-        fp16=torch.cuda.is_available(),
-        bf16=False,
+        fp16=False,
+        bf16=True,
         dataloader_num_workers=4,
         report_to="none"
     )
