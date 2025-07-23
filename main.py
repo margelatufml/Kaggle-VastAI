@@ -15,7 +15,7 @@ label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
 MODEL_NAME = "roberta-large"
-MAX_LEN = 521  # try 384 if OOM
+MAX_LEN = 512  # try 384 if OOM
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def preprocess(tokenizer, df):
