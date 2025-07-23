@@ -1,4 +1,7 @@
 import os
+import warnings
+warnings.filterwarnings("ignore")  # Suppress transformers and sklearn warnings
+
 import nltk
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
@@ -8,8 +11,10 @@ nltk.download('vader_lexicon')
 
 import pandas as pd
 import numpy as np
-from transformers import (AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments,
-                          DataCollatorWithPadding, EarlyStoppingCallback)
+from transformers import (
+    AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments,
+    DataCollatorWithPadding, EarlyStoppingCallback
+)
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import log_loss
 from sklearn.linear_model import LogisticRegression
@@ -20,10 +25,11 @@ import string
 import torch
 from tqdm import tqdm
 
-# Use deterministic algorithms for reproducibility (optional)
+# -- For deterministic runs:
 torch.manual_seed(42)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
 tokenizer_tb = TreebankWordTokenizer()
 
@@ -106,6 +112,7 @@ def word_count(text):
     return len(get_words(text))
 
 def extract_features(df):
+    print("[INFO] Extracting features from text...")
     features = pd.DataFrame(index=df.index)
     features['sentiment'] = df['text'].apply(sentiment_nltk)
     features['chars_between_commas'] = df['text'].apply(chars_between_commas)
@@ -134,7 +141,11 @@ X_test_feat = extract_features(test)
 # ==== RoBERTa Section ====
 MODEL_NAME = "roberta-large"
 MAX_LEN = 384
-BATCH_SIZE = 32   # Try 32, 48, or even 64 for A100; go up until you hit VRAM OOM!
+# For A100: use bf16, for most others: fp16, for old cards: fp32
+USE_BF16 = torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
+USE_FP16 = torch.cuda.is_available() and not USE_BF16
+BATCH_SIZE = 32 if USE_BF16 else 8  # Go higher for A100, lower for 3090/other
+
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def preprocess(tokenizer, df):
@@ -159,8 +170,15 @@ class SpookyDataset(torch.utils.data.Dataset):
         return len(self.encodings["input_ids"])
 
 def compute_metrics(eval_pred):
+    import numpy as np
     logits, labels = eval_pred
-    probs = torch.nn.functional.softmax(torch.tensor(logits), dim=-1).numpy()
+    logits_tensor = torch.tensor(logits)
+    # Clamp logits for numerical stability
+    logits_tensor = torch.clamp(logits_tensor, -30, 30)
+    probs = torch.nn.functional.softmax(logits_tensor, dim=-1).cpu().numpy()
+    if not np.isfinite(probs).all():
+        print("[WARNING] NaN or Inf in predictions. Skipping log_loss.")
+        return {"log_loss": 99.99}
     return {"log_loss": log_loss(labels, probs)}
 
 data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
@@ -175,7 +193,8 @@ print("Tokenizing test set for RoBERTa...")
 test_encodings = preprocess(tokenizer, test)
 test_dataset = SpookyDataset(test_encodings)
 
-print("Training RoBERTa-large (A100-optimized)...")
+print(f"Training RoBERTa-large on {'A100 bf16' if USE_BF16 else 'GPU (fp16)' if USE_FP16 else 'CPU (fp32)'}...")
+
 for fold, (train_idx, val_idx) in enumerate(fold_splits):
     print(f"\n==== RoBERTa Fold {fold+1}/{NUM_FOLDS} ====")
     train_fold = train.iloc[train_idx].reset_index(drop=True)
@@ -187,8 +206,7 @@ for fold, (train_idx, val_idx) in enumerate(fold_splits):
     model = AutoModelForSequenceClassification.from_pretrained(
         MODEL_NAME,
         num_labels=len(author2label),
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        # xformers backend used automatically if available
+        torch_dtype=torch.bfloat16 if USE_BF16 else (torch.float16 if USE_FP16 else torch.float32),
     )
     training_args = TrainingArguments(
         output_dir=f"./results_fold{fold+1}",
@@ -199,12 +217,12 @@ for fold, (train_idx, val_idx) in enumerate(fold_splits):
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=f"./logs_fold{fold+1}",
-        eval_strategy="epoch",
+        evaluation_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
-        fp16=False,
-        bf16=True,
+        fp16=USE_FP16,
+        bf16=USE_BF16,
         dataloader_num_workers=4,
         report_to="none"
     )
@@ -219,10 +237,11 @@ for fold, (train_idx, val_idx) in enumerate(fold_splits):
     )
     trainer.train()
     val_logits = trainer.predict(val_dataset).predictions
-    val_probs = torch.nn.functional.softmax(torch.tensor(val_logits), dim=-1).numpy()
+    # Clamp again just in case
+    val_probs = torch.nn.functional.softmax(torch.clamp(torch.tensor(val_logits), -30, 30), dim=-1).cpu().numpy()
     oof_preds_roberta[val_idx] = val_probs
     test_logits = trainer.predict(test_dataset).predictions
-    test_probs = torch.nn.functional.softmax(torch.tensor(test_logits), dim=-1).numpy()
+    test_probs = torch.nn.functional.softmax(torch.clamp(torch.tensor(test_logits), -30, 30), dim=-1).cpu().numpy()
     test_preds_roberta_folds[fold] = test_probs
     del model, trainer, train_dataset, val_dataset
     torch.cuda.empty_cache()
