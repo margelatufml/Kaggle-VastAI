@@ -1,5 +1,8 @@
 from datasets import load_dataset
-from transformers import (AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling, Trainer, TrainingArguments)
+from transformers import (
+    AutoTokenizer, AutoModelForMaskedLM,
+    DataCollatorForLanguageModeling, Trainer, TrainingArguments
+)
 
 # 1. Settings
 MODEL_NAME = "roberta-large"  # Or 'deberta-v3-large' for even better results if available
@@ -43,5 +46,9 @@ trainer = Trainer(
     data_collator=collator,
 )
 trainer.train()
+
+# **VERY IMPORTANT: Save both model and tokenizer**
 trainer.save_model("./mlm_spooky")
-print("MLM Pretraining Complete. Model saved to ./mlm_spooky")
+tokenizer.save_pretrained("./mlm_spooky")  # <-- ADD THIS LINE
+
+print("MLM Pretraining Complete. Model and tokenizer saved to ./mlm_spooky")
