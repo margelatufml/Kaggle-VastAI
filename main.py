@@ -74,17 +74,19 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     training_args = TrainingArguments(
         output_dir=f"./results_fold{fold + 1}",
         num_train_epochs=6,
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=16,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=32,  # <-- Try 64 if you can, else reduce to 32 or 24
+        per_device_eval_batch_size=64,  # <-- Evaluation is less memory-bound, can go higher
+        gradient_accumulation_steps=1,  # <-- 1 is ideal, no need to accumulate if you fit big batches!
         learning_rate=2e-5,
         weight_decay=0.01,
         logging_dir=f"./logs_fold{fold + 1}",
         eval_strategy="epoch",
-        save_strategy="no",  # <-- CHANGE THIS!
-        load_best_model_at_end=False,  # <-- Otherwise will fail if no model saved!
+        save_strategy="no",  # <-- Don't save checkpoints to save disk
+        load_best_model_at_end=False,
         metric_for_best_model="eval_loss",
-        fp16=torch.cuda.is_available(),
+        fp16=True,  # <-- Always use fp16 on A100 (supported & faster)
+        dataloader_num_workers=8,  # <-- Use 8 (or even 16) for maximum dataloader throughput
+        pin_memory=True,  # <-- Optional but helps dataloader speed
         seed=42 + fold,
         report_to="none"
     )
