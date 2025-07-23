@@ -15,7 +15,7 @@ label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
 MODEL_NAME = "roberta-large"
-MAX_LEN = 384  # try 384 if OOM
+MAX_LEN = 521  # try 384 if OOM
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def preprocess(tokenizer, df):
@@ -74,8 +74,8 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
     training_args = TrainingArguments(
         output_dir=f"./results_fold{fold + 1}",
         num_train_epochs=6,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=16,
         gradient_accumulation_steps=4,
         learning_rate=2e-5,
         weight_decay=0.01,
