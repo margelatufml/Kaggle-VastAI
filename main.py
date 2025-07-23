@@ -24,8 +24,8 @@ label2author = {i: a for a, i in author2label.items()}
 train['label'] = train['author'].map(author2label)
 
 MODEL_NAME = "roberta-large"
-MAX_LEN = 384
-NUM_FOLDS = 5
+MAX_LEN = 512
+NUM_FOLDS = 6
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
@@ -84,23 +84,24 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
 
     training_args = TrainingArguments(
         output_dir=fold_output_dir,
-        num_train_epochs=8,
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
-        gradient_accumulation_steps=4,
-        learning_rate=1.5e-5,
-        weight_decay=0.05,
+        num_train_epochs=6,  # Rely on early stopping, so can lower this
+        per_device_train_batch_size=16,  # Increase as much as GPU allows!
+        per_device_eval_batch_size=16,
+        gradient_accumulation_steps=2,  # Set so total "effective" batch size is ~32 or more
+        learning_rate=2e-5,  # Try a slightly higher LR for faster convergence
+        weight_decay=0.01,  # Lower for less regularization
         logging_dir=fold_logging_dir,
         eval_strategy="epoch",
-        save_strategy="no",               # <<< NO checkpointing (disk safe!)
+        save_strategy="no",
         save_total_limit=1,
-        load_best_model_at_end=False,     # <<< don't try to reload best checkpoint
+        load_best_model_at_end=False,
         metric_for_best_model="eval_loss",
         label_smoothing_factor=0.1,
-        warmup_ratio=0.15,
-        fp16=torch.cuda.is_available(),
+        warmup_ratio=0.08,
+        fp16=True,
         seed=42 + fold,
-        report_to="none"
+        report_to="none",
+        dataloader_num_workers=4,  # Adjust up or down based on CPU
     )
 
     trainer = Trainer(
