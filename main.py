@@ -73,7 +73,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(train, train['label'])):
 
     training_args = TrainingArguments(
         output_dir=f"./results_fold{fold + 1}",
-        num_train_epochs=6,
+        num_train_epochs=4,
         per_device_train_batch_size=32,  # <-- Try 64 if you can, else reduce to 32 or 24
         per_device_eval_batch_size=64,  # <-- Evaluation is less memory-bound, can go higher
         gradient_accumulation_steps=1,  # <-- 1 is ideal, no need to accumulate if you fit big batches!
