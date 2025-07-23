@@ -28,15 +28,15 @@ def preprocess(tokenizer, df):
     )
 
 class SpookyDataset(torch.utils.data.Dataset):
-    def _init_(self, encodings, labels=None):
+    def __init__(self, encodings, labels=None):
         self.encodings = encodings
         self.labels = labels
-    def _getitem_(self, idx):
+    def __getitem__(self, idx):
         item = {k: torch.tensor(v[idx]) for k, v in self.encodings.items()}
         if self.labels is not None:
             item["labels"] = torch.tensor(self.labels[idx])
         return item
-    def _len_(self):
+    def __len__(self):
         return len(self.encodings["input_ids"])
 
 def compute_metrics(eval_pred):
