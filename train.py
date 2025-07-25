@@ -1,13 +1,18 @@
 import os
-import pandas as pd, numpy as np, torch
+import pandas as pd
+import numpy as np
+import torch
 from datasets import load_dataset, Dataset
-from transformers import (AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling,
-                          AutoModelForSequenceClassification, Trainer, TrainingArguments, EarlyStoppingCallback)
-from sklearn.model_selection import StratifiedKFold
+from transformers import (
+    AutoTokenizer, AutoModelForMaskedLM, DataCollatorForLanguageModeling,
+    AutoModelForSequenceClassification, Trainer, TrainingArguments, EarlyStoppingCallback
+)
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.metrics import log_loss, confusion_matrix, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+from pathlib import Path
 
 # === SETTINGS ===
 MODEL_NAME = "roberta-large"
@@ -54,9 +59,28 @@ else:
 
 # === STEP 2: DATA AUGMENTATION & COMBINATION ===
 print("\n==== [2] DATA AUGMENTATION & COMBINE ====")
-# NOTE: If you already have the CSVs, this just concatenates.
-dfs = [pd.read_csv(f) for f in TRAIN_CSVS if os.path.exists(f)]
+dfs = []
+for f in TRAIN_CSVS:
+    if os.path.exists(f):
+        df = pd.read_csv(f)
+        base_name = Path(f).stem
+        # Always make a group_id
+        if 'group_id' not in df.columns:
+            if 'id' in df.columns:
+                print(f"'{f}' has 'id' column, using as group_id.")
+                df['group_id'] = df['id']
+            else:
+                print(f"'{f}' has NO 'id' column, generating unique group_ids per row.")
+                df['id'] = [f"{base_name}_{i}" for i in range(len(df))]
+                df['group_id'] = df['id']
+        dfs.append(df)
+    else:
+        print(f"WARNING: {f} not found. Skipping.")
+
 combined = pd.concat(dfs, ignore_index=True)
+if 'group_id' not in combined.columns:
+    print("ERROR: No group_id column present in combined dataframe. Exiting for data leakage prevention.")
+    exit(1)
 combined.to_csv(AUG_CSV, index=False)
 print(f"Combined data written to {AUG_CSV}: {combined.shape}")
 
@@ -77,8 +101,8 @@ plt.tight_layout()
 plt.savefig("plots/text_length_distribution.png")
 plt.close()
 
-# === STEP 3: CROSS-VALIDATED FINETUNING (with PLOTS) ===
-print("\n==== [3] CROSS-VALIDATED FINETUNING (ROBERTA) ====")
+# === STEP 3: CROSS-VALIDATED FINETUNING (GROUPED, NO LEAKAGE) ===
+print("\n==== [3] CROSS-VALIDATED FINETUNING (ROBERTA, GROUPED NO LEAKAGE) ====")
 train = pd.read_csv(AUG_CSV)
 test = pd.read_csv(TEST_CSV)
 author2label = {a: i for i, a in enumerate(sorted(train["author"].unique()))}
@@ -91,11 +115,14 @@ def tokenize(batch):
 
 oof_preds = np.zeros((len(train), 3))
 test_preds = np.zeros((len(test), 3))
-skf = StratifiedKFold(n_splits=FOLDS, shuffle=True, random_state=SEED)
+
+# === NO DATA LEAKAGE: STRATIFIED GROUP K-FOLD ===
+print("Using StratifiedGroupKFold to prevent data leakage between augmentations!")
+sgkf = StratifiedGroupKFold(n_splits=FOLDS, shuffle=True, random_state=SEED)
 fold_logloss = []
 all_cms = []
 
-for fold, (tr_idx, val_idx) in enumerate(skf.split(train, train["label"])):
+for fold, (tr_idx, val_idx) in enumerate(sgkf.split(train, train["label"], groups=train["group_id"])):
     print(f"\n=== Fold {fold+1}/{FOLDS} ===")
     train_data = Dataset.from_pandas(train.iloc[tr_idx][["text", "label"]].reset_index(drop=True)).map(tokenize, batched=True)
     val_data = Dataset.from_pandas(train.iloc[val_idx][["text", "label"]].reset_index(drop=True)).map(tokenize, batched=True)
@@ -165,8 +192,6 @@ plt.ylabel("Log-Loss")
 plt.tight_layout()
 plt.savefig("plots/cv_logloss_per_fold.png")
 plt.close()
-
-# Optionally, feature importance/embeddings can be visualized with additional code
 
 # Output test preds
 sub = pd.DataFrame(test_preds, columns=[label2author[i] for i in range(3)])
