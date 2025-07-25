@@ -1,9 +1,0 @@
-              precision    recall  f1-score   support
-
-         EAP       0.94      0.92      0.93     25471
-         HPL       0.97      0.95      0.96     26530
-         MWS       0.92      0.96      0.94     18530
-
-    accuracy                           0.94     70531
-   macro avg       0.94      0.94      0.94     70531
-weighted avg       0.94      0.94      0.94     70531
